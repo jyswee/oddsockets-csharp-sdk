@@ -1,0 +1,87 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFrameworks>net6.0;net8.0;netstandard2.0</TargetFrameworks>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+    
+    <!-- Package Information -->
+    <PackageId>OddSockets.DotNet.SDK</PackageId>
+    <Version>0.1.0-beta.1</Version>
+    <Authors>Joe Wee</Authors>
+    <Company>Tyga Cloud</Company>
+    <Product>OddSockets</Product>
+    <Description>Official .NET SDK for OddSockets real-time messaging platform. Provides enterprise-ready real-time messaging with automatic load balancing and failover.</Description>
+    <PackageTags>realtime;messaging;websockets;signalr;pubsub;chat;notifications;dotnet;csharp</PackageTags>
+    <PackageProjectUrl>https://github.com/jyswee/oddsockets-csharp-sdk</PackageProjectUrl>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageRequireLicenseAcceptance>false</PackageRequireLicenseAcceptance>
+    <RepositoryUrl>https://github.com/jyswee/oddsockets-csharp-sdk</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageReleaseNotes>
+      Initial beta release of OddSockets .NET SDK.
+      
+      Features:
+      - Real-time messaging with automatic load balancing
+      - Task-based async/await patterns
+      - Strong typing with nullable reference types
+      - Dependency injection support
+      - ASP.NET Core integration
+      - Bulk message publishing
+      - Message history and presence tracking
+      - Automatic reconnection with exponential backoff
+      - Thread-safe operations
+      - Comprehensive logging support
+    </PackageReleaseNotes>
+    
+    <!-- Documentation -->
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <DocumentationFile>bin\$(Configuration)\$(TargetFramework)\$(AssemblyName).xml</DocumentationFile>
+    
+    <!-- Source Link -->
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+    <DebugType>embedded</DebugType>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Core Dependencies -->
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="8.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="8.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Options" Version="8.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Http" Version="8.0.0" />
+    
+    <!-- JSON Serialization -->
+    <PackageReference Include="System.Text.Json" Version="8.0.0" />
+    
+    <!-- WebSocket Client -->
+    <PackageReference Include="SocketIOClient" Version="3.1.0" />
+    
+    <!-- HTTP Client -->
+    <PackageReference Include="Microsoft.Extensions.Http.Polly" Version="8.0.0" />
+    
+    <!-- Reactive Extensions (Optional) -->
+    <PackageReference Include="System.Reactive" Version="6.0.0" />
+    
+    <!-- Source Link for debugging -->
+    <PackageReference Include="Microsoft.SourceLink.GitHub" Version="8.0.0" PrivateAssets="All" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(TargetFramework)' == 'netstandard2.0'">
+    <!-- Additional dependencies for .NET Standard 2.0 -->
+    <PackageReference Include="System.Threading.Tasks.Extensions" Version="4.5.4" />
+    <PackageReference Include="Microsoft.Bcl.AsyncInterfaces" Version="8.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Include README and other files in package -->
+    <None Include="README.md" Pack="true" PackagePath="\" />
+    <None Include="LICENSE" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+</Project>
