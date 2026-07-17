@@ -11,7 +11,7 @@ namespace OddSockets;
 /// </summary>
 public class ManagerDiscovery
 {
-    private readonly string _managerUrl = "https://manager1.oddsockets.tyga.network";
+    private readonly string _managerUrl = "https://connect.oddsockets.tyga.network";
 
     /// <summary>
     /// Gets the singleton instance of ManagerDiscovery.

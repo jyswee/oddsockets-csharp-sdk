@@ -14,9 +14,9 @@ public class OddSocketsConfig
     public string ApiKey { get; set; } = string.Empty;
 
     /// <summary>
-    /// Gets or sets the manager URL (optional, defaults to https://manager1.oddsockets.tyga.network).
+    /// Gets or sets the manager URL (optional, defaults to https://connect.oddsockets.tyga.network).
     /// </summary>
-    public string ManagerUrl { get; set; } = "https://manager1.oddsockets.tyga.network";
+    public string ManagerUrl { get; set; } = "https://connect.oddsockets.tyga.network";
 
     /// <summary>
     /// Gets or sets the user identifier (optional, auto-generated if not provided).

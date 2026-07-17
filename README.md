@@ -108,7 +108,7 @@ public class ChatController : ControllerBase
 ```csharp
 var config = new OddSocketsConfigBuilder()
     .WithApiKey("ak_live_your_api_key_here")
-    .WithManagerUrl("https://manager1.oddsockets.tyga.network") // Optional
+    .WithManagerUrl("https://connect.oddsockets.tyga.network") // Optional
     .WithUserId("user123") // Optional, auto-generated if not provided
     .WithAutoConnect(true) // Optional, default: true
     .WithReconnectAttempts(5) // Optional, default: 5
@@ -436,7 +436,7 @@ public class DashboardService
 | Property | Type | Default | Description |
 |----------|------|---------|-------------|
 | `ApiKey` | `string` | Required | Your OddSockets API key |
-| `ManagerUrl` | `string` | `https://manager1.oddsockets.tyga.network` | Manager service URL |
+| `ManagerUrl` | `string` | `https://connect.oddsockets.tyga.network` | Manager service URL |
 | `UserId` | `string?` | Auto-generated | User identifier |
 | `AutoConnect` | `bool` | `true` | Auto-connect on creation |
 | `ReconnectAttempts` | `int` | `5` | Max reconnection attempts |
