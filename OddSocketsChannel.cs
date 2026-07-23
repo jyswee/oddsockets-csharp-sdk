@@ -1,26 +1,30 @@
 using System.Collections.Concurrent;
+using System.Globalization;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using OddSockets.Models;
 using OddSockets.Exceptions;
-using SocketIOClient;
 
 namespace OddSockets;
 
 /// <summary>
 /// Channel class for managing real-time messaging.
-/// 
+///
 /// This class provides channel-specific functionality for subscribing,
-/// publishing, and managing messages. It follows the same API pattern
-/// as our other SDKs for consistency across languages.
+/// publishing, and managing messages. All operations travel over the real
+/// Socket.IO connection to the assigned OddSockets worker and are correlated
+/// with the worker's response events - there is no local echo or simulation.
+/// It follows the same API pattern as our other SDKs for consistency across
+/// languages.
 /// </summary>
 public class OddSocketsChannel
 {
+    private const int RequestTimeoutMs = 15000;
+
     private readonly string _name;
     private readonly OddSocketsClient _client;
     private readonly ILogger _logger;
     private readonly ConcurrentQueue<Message> _messageHistory;
-    private readonly ConcurrentDictionary<string, object> _presenceUsers;
     private readonly SemaphoreSlim _operationSemaphore;
 
     private bool _subscribed;
@@ -50,7 +54,6 @@ public class OddSocketsChannel
         _client = client;
         _logger = logger;
         _messageHistory = new ConcurrentQueue<Message>();
-        _presenceUsers = new ConcurrentDictionary<string, object>();
         _operationSemaphore = new SemaphoreSlim(1, 1);
         _eventHandlers = new ConcurrentDictionary<EventType, List<Func<object?, Task>>>();
 
@@ -80,45 +83,31 @@ public class OddSocketsChannel
         {
             if (_subscribed)
             {
+                _messageCallback = callback;
                 _logger.LogWarning("Channel '{ChannelName}' already subscribed", _name);
                 return;
             }
 
-            _messageCallback = callback;
             _subscribeOptions = options ?? new SubscribeOptions();
 
             try
             {
-                var socket = _client.GetSocket();
-                if (socket == null)
-                    throw new OddSocketsConnectionException("Socket not available", ErrorCodes.ConnectionFailed);
-
-                // Send subscription request
-                await socket.EmitAsync("subscribe", new
+                var payload = new Dictionary<string, object>
                 {
-                    channel = _name,
-                    options = new
-                    {
-                        enablePresence = _subscribeOptions.EnablePresence,
-                        retainHistory = _subscribeOptions.RetainHistory,
-                        filterExpression = _subscribeOptions.FilterExpression
-                    }
-                });
+                    ["channel"] = _name,
+                    ["options"] = BuildSubscribeOptions(_subscribeOptions)
+                };
 
-                // Simulate network delay
-                await Task.Delay(50, cancellationToken);
+                // Real request/response: block until the worker acks "subscribed".
+                await _client.RequestAsync("subscribe", payload, "subscribed", _name, RequestTimeoutMs);
 
+                _messageCallback = callback;
                 _subscribed = true;
                 _logger.LogInformation("Subscribed to channel: {ChannelName}", _name);
-
-                // If presence is enabled, add current user
-                if (_subscribeOptions.EnablePresence)
-                {
-                    _presenceUsers.TryAdd(_client.UserId, new object());
-                }
-
-                // Simulate receiving initial messages
-                await SimulateInitialMessagesAsync(cancellationToken);
+            }
+            catch (OddSocketsException)
+            {
+                throw;
             }
             catch (Exception ex)
             {
@@ -172,23 +161,18 @@ public class OddSocketsChannel
 
             try
             {
-                var socket = _client.GetSocket();
-                if (socket != null)
-                {
-                    await socket.EmitAsync("unsubscribe", new { channel = _name });
-                }
-
-                // Simulate network delay
-                await Task.Delay(50, cancellationToken);
+                var payload = new Dictionary<string, object> { ["channel"] = _name };
+                await _client.RequestAsync("unsubscribe", payload, "unsubscribed", _name, RequestTimeoutMs);
 
                 _subscribed = false;
                 _messageCallback = null;
                 _subscribeOptions = null;
 
-                // Remove from presence
-                _presenceUsers.TryRemove(_client.UserId, out _);
-
                 _logger.LogInformation("Unsubscribed from channel: {ChannelName}", _name);
+            }
+            catch (OddSocketsException)
+            {
+                throw;
             }
             catch (Exception ex)
             {
@@ -219,71 +203,30 @@ public class OddSocketsChannel
         if (!_client.IsConnected)
             throw new OddSocketsConnectionException("Not connected to OddSockets", ErrorCodes.ConnectionFailed);
 
-        // Validate message size before publishing
-        try
-        {
-            MessageSizeValidator.ValidateMessageSize(message);
-        }
-        catch (OddSocketsValidationException)
-        {
-            throw; // Re-throw validation exceptions as-is
-        }
+        // Validate message size before publishing.
+        MessageSizeValidator.ValidateMessageSize(message);
 
         try
         {
-            var messageId = $"msg_{Guid.NewGuid():N}";
-            var timestamp = DateTime.UtcNow;
-
-            // Create message object
-            var messageObj = new Message
+            var payload = new Dictionary<string, object>
             {
-                Id = messageId,
-                Channel = _name,
-                Data = message,
-                Timestamp = timestamp,
-                UserId = _client.UserId,
-                Metadata = options?.Metadata
+                ["channel"] = _name,
+                ["message"] = message ?? new { }
             };
 
-            var socket = _client.GetSocket();
-            if (socket == null)
-                throw new OddSocketsConnectionException("Socket not available", ErrorCodes.ConnectionFailed);
-
-            // Send publish request
-            await socket.EmitAsync("publish", new
+            var publishOptions = BuildPublishOptions(options);
+            if (publishOptions.Count > 0)
             {
-                channel = _name,
-                message = message,
-                options = new
-                {
-                    ttl = options?.Ttl,
-                    metadata = options?.Metadata,
-                    storeInHistory = options?.StoreInHistory ?? false
-                }
-            });
-
-            // Simulate network delay
-            await Task.Delay(20, cancellationToken);
-
-            // Store in history if requested
-            if (options?.StoreInHistory == true || (_subscribeOptions?.RetainHistory == true))
-            {
-                _messageHistory.Enqueue(messageObj);
-                
-                // Keep only last 100 messages
-                while (_messageHistory.Count > 100)
-                {
-                    _messageHistory.TryDequeue(out _);
-                }
+                payload["options"] = publishOptions;
             }
 
-            // Deliver to local subscriber if subscribed
-            if (_subscribed && _messageCallback != null)
-            {
-                await DeliverMessageAsync(messageObj);
-            }
+            // Real request/response: the worker returns "published" with the id.
+            var resp = await _client.RequestAsync("publish", payload, "published", _name, RequestTimeoutMs);
 
-            _logger.LogDebug("Published message to channel '{ChannelName}': {Message}", _name, message);
+            var messageId = GetString(resp, "messageId") ?? GetString(resp, "message_id") ?? string.Empty;
+            var timestamp = GetTimestamp(resp, "timestamp");
+
+            _logger.LogDebug("Published message to channel '{ChannelName}': {MessageId}", _name, messageId);
 
             return new PublishResult
             {
@@ -292,6 +235,10 @@ public class OddSocketsChannel
                 Channel = _name,
                 Success = true
             };
+        }
+        catch (OddSocketsException)
+        {
+            throw;
         }
         catch (Exception ex)
         {
@@ -317,40 +264,38 @@ public class OddSocketsChannel
 
         try
         {
-            // Simulate API call delay
-            await Task.Delay(100, cancellationToken);
-
-            var messages = _messageHistory.ToArray().ToList();
-
-            // Filter by time range if specified
-            if (options?.Start != null)
+            var payload = new Dictionary<string, object>
             {
-                messages = messages.Where(msg => msg.Timestamp >= options.Start).ToList();
+                ["channel"] = _name,
+                ["count"] = options?.Limit is > 0 ? options.Limit!.Value : 50
+            };
+            if (options?.Start != null) payload["start"] = options.Start.Value.ToUniversalTime().ToString("O");
+            if (options?.End != null) payload["end"] = options.End.Value.ToUniversalTime().ToString("O");
+
+            var resp = await _client.RequestAsync("get_history", payload, "history", _name, RequestTimeoutMs);
+
+            var messages = new List<Message>();
+            if (resp.ValueKind == JsonValueKind.Object &&
+                resp.TryGetProperty("messages", out var arr) &&
+                arr.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var el in arr.EnumerateArray())
+                {
+                    messages.Add(EnvelopeToMessage(el));
+                }
             }
 
-            if (options?.End != null)
-            {
-                messages = messages.Where(msg => msg.Timestamp <= options.End).ToList();
-            }
-
-            // Sort messages
             if (options?.Reverse == true)
             {
-                messages = messages.OrderByDescending(msg => msg.Timestamp).ToList();
-            }
-            else
-            {
-                messages = messages.OrderBy(msg => msg.Timestamp).ToList();
-            }
-
-            // Apply limit
-            if (options?.Limit != null && options.Limit > 0)
-            {
-                messages = messages.Take(options.Limit.Value).ToList();
+                messages.Reverse();
             }
 
             _logger.LogDebug("Retrieved {Count} messages from channel '{ChannelName}' history", messages.Count, _name);
             return messages;
+        }
+        catch (OddSocketsException)
+        {
+            throw;
         }
         catch (Exception ex)
         {
@@ -374,20 +319,54 @@ public class OddSocketsChannel
 
         try
         {
-            // Simulate API call delay
-            await Task.Delay(50, cancellationToken);
+            var payload = new Dictionary<string, object> { ["channel"] = _name };
+            var resp = await _client.RequestAsync("get_presence", payload, "presence", _name, RequestTimeoutMs);
 
-            var users = _presenceUsers.Keys.ToList();
+            var users = new List<string>();
+            if (resp.ValueKind == JsonValueKind.Object &&
+                resp.TryGetProperty("occupants", out var occupants) &&
+                occupants.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var occupant in occupants.EnumerateArray())
+                {
+                    if (occupant.ValueKind == JsonValueKind.String)
+                    {
+                        var value = occupant.GetString();
+                        if (value != null) users.Add(value);
+                    }
+                    else if (occupant.ValueKind == JsonValueKind.Object &&
+                             occupant.TryGetProperty("userId", out var uid) &&
+                             uid.ValueKind == JsonValueKind.String)
+                    {
+                        var value = uid.GetString();
+                        if (value != null) users.Add(value);
+                    }
+                }
+            }
+
+            var count = users.Count;
+            if (resp.ValueKind == JsonValueKind.Object &&
+                resp.TryGetProperty("occupancy", out var occ) &&
+                occ.ValueKind == JsonValueKind.Number &&
+                occ.TryGetInt32(out var parsedCount))
+            {
+                count = parsedCount;
+            }
+
             var presence = new PresenceInfo
             {
                 Channel = _name,
                 Users = users,
-                Count = users.Count,
+                Count = count,
                 Timestamp = DateTime.UtcNow
             };
 
             _logger.LogDebug("Retrieved presence for channel '{ChannelName}': {Count} users", _name, presence.Count);
             return presence;
+        }
+        catch (OddSocketsException)
+        {
+            throw;
         }
         catch (Exception ex)
         {
@@ -459,15 +438,35 @@ public class OddSocketsChannel
         }
     }
 
-    // Internal methods for handling socket events
-    internal async Task HandleMessageAsync(dynamic data)
+    /// <summary>
+    /// Internal: handle a real incoming message broadcast (routed by the client).
+    /// </summary>
+    /// <param name="envelope">The broadcast envelope from the worker.</param>
+    internal async Task HandleMessageAsync(JsonElement envelope)
     {
         try
         {
-            var message = JsonSerializer.Deserialize<Message>(data.ToString());
-            if (message != null)
+            var message = EnvelopeToMessage(envelope);
+
+            if (_subscribeOptions?.RetainHistory == true)
             {
-                await DeliverMessageAsync(message);
+                _messageHistory.Enqueue(message);
+                while (_messageHistory.Count > 100)
+                {
+                    _messageHistory.TryDequeue(out _);
+                }
+            }
+
+            var callback = _messageCallback;
+            if (callback != null)
+            {
+                if (_subscribeOptions?.FilterExpression != null &&
+                    !EvaluateFilter(message, _subscribeOptions.FilterExpression))
+                {
+                    return;
+                }
+
+                await callback(message);
             }
         }
         catch (Exception ex)
@@ -476,122 +475,112 @@ public class OddSocketsChannel
         }
     }
 
-    internal async Task HandleSubscribedAsync(dynamic data)
+    private static Dictionary<string, object> BuildSubscribeOptions(SubscribeOptions options)
     {
-        await EmitEventAsync(EventType.Connected, data);
-    }
-
-    internal async Task HandleUnsubscribedAsync(dynamic data)
-    {
-        await EmitEventAsync(EventType.Disconnected, data);
-    }
-
-    internal async Task HandlePublishedAsync(dynamic data)
-    {
-        await EmitEventAsync(EventType.Message, data);
-    }
-
-    internal async Task HandlePresenceAsync(dynamic data)
-    {
-        await EmitEventAsync(EventType.Presence, data);
-    }
-
-    internal async Task HandlePresenceChangeAsync(dynamic data)
-    {
-        await EmitEventAsync(EventType.Presence, data);
-    }
-
-    internal async Task HandleHistoryAsync(dynamic data)
-    {
-        // Handle history response if needed
-    }
-
-    private async Task DeliverMessageAsync(Message message)
-    {
-        if (_messageCallback == null) return;
-
-        try
+        // Worker destructures options with defaults and rejects JSON null, so we
+        // only emit concrete values (camelCase to match the wire contract).
+        var payload = new Dictionary<string, object>
         {
-            // Apply filter if specified
-            if (_subscribeOptions?.FilterExpression != null)
+            ["enablePresence"] = options.EnablePresence,
+            ["retainHistory"] = options.RetainHistory
+        };
+        if (!string.IsNullOrEmpty(options.FilterExpression))
+        {
+            payload["filterExpression"] = options.FilterExpression!;
+        }
+        return payload;
+    }
+
+    private static Dictionary<string, object> BuildPublishOptions(PublishOptions? options)
+    {
+        var payload = new Dictionary<string, object>();
+        if (options == null) return payload;
+
+        if (options.Ttl.HasValue) payload["ttl"] = options.Ttl.Value;
+        if (options.Metadata != null) payload["metadata"] = options.Metadata;
+        payload["storeInHistory"] = options.StoreInHistory;
+        return payload;
+    }
+
+    private Message EnvelopeToMessage(JsonElement envelope)
+    {
+        string id = GetString(envelope, "id") ?? GetString(envelope, "messageId") ?? string.Empty;
+
+        object? data = null;
+        if (envelope.ValueKind == JsonValueKind.Object)
+        {
+            if (envelope.TryGetProperty("message", out var inner))
             {
-                if (!EvaluateFilter(message, _subscribeOptions.FilterExpression))
-                {
-                    return;
-                }
+                data = inner.Clone();
             }
+            else if (envelope.TryGetProperty("data", out var dataEl))
+            {
+                data = dataEl.Clone();
+            }
+        }
 
-            await _messageCallback(message);
-        }
-        catch (Exception ex)
+        string? userId = null;
+        if (envelope.ValueKind == JsonValueKind.Object &&
+            envelope.TryGetProperty("publisher", out var publisher) &&
+            publisher.ValueKind == JsonValueKind.Object &&
+            publisher.TryGetProperty("userId", out var uid) &&
+            uid.ValueKind == JsonValueKind.String)
         {
-            _logger.LogError(ex, "Error delivering message to callback for channel '{ChannelName}'", _name);
+            userId = uid.GetString();
         }
+        userId ??= GetString(envelope, "userId") ?? GetString(envelope, "user_id");
+
+        return new Message
+        {
+            Id = id,
+            Channel = _name,
+            Data = data,
+            Timestamp = GetTimestamp(envelope, "timestamp"),
+            UserId = userId
+        };
     }
 
     private bool EvaluateFilter(Message message, string filterExpression)
     {
         try
         {
-            // Simple filter evaluation (in real SDK, this would be more sophisticated)
             var messageStr = JsonSerializer.Serialize(message.Data);
             return messageStr.Contains(filterExpression, StringComparison.OrdinalIgnoreCase);
         }
         catch
         {
-            return true; // If filter evaluation fails, pass the message
+            return true;
         }
     }
 
-    private async Task SimulateInitialMessagesAsync(CancellationToken cancellationToken)
+    private static string? GetString(JsonElement element, string propertyName)
     {
-        if (!_subscribed || _messageCallback == null) return;
-
-        // Create a welcome message
-        var welcomeMessage = new Message
+        if (element.ValueKind == JsonValueKind.Object &&
+            element.TryGetProperty(propertyName, out var value) &&
+            value.ValueKind == JsonValueKind.String)
         {
-            Id = $"msg_{Guid.NewGuid():N}",
-            Channel = _name,
-            Data = new
+            return value.GetString();
+        }
+        return null;
+    }
+
+    private static DateTime GetTimestamp(JsonElement element, string propertyName)
+    {
+        if (element.ValueKind == JsonValueKind.Object &&
+            element.TryGetProperty(propertyName, out var value))
+        {
+            if (value.ValueKind == JsonValueKind.String &&
+                DateTime.TryParse(value.GetString(), CultureInfo.InvariantCulture,
+                    DateTimeStyles.RoundtripKind, out var parsed))
             {
-                type = "system",
-                text = $"Welcome to channel '{_name}'!",
-                timestamp = DateTime.UtcNow.ToString("O")
-            },
-            Timestamp = DateTime.UtcNow,
-            UserId = "system"
-        };
-
-        // Deliver after a short delay
-        await Task.Delay(100, cancellationToken);
-        await DeliverMessageAsync(welcomeMessage);
-
-        // Store in history if enabled
-        if (_subscribeOptions?.RetainHistory == true)
-        {
-            _messageHistory.Enqueue(welcomeMessage);
+                return parsed.ToUniversalTime();
+            }
+            if (value.ValueKind == JsonValueKind.Number && value.TryGetInt64(out var epochMs))
+            {
+                return DateTimeOffset.FromUnixTimeMilliseconds(epochMs).UtcDateTime;
+            }
         }
-    }
-
-    private async Task EmitEventAsync(EventType eventType, object? data)
-    {
-        if (_eventHandlers.TryGetValue(eventType, out var handlers))
-        {
-            var tasks = handlers.Select(handler => SafeInvokeHandler(handler, data));
-            await Task.WhenAll(tasks);
-        }
-    }
-
-    private async Task SafeInvokeHandler(Func<object?, Task> handler, object? data)
-    {
-        try
-        {
-            await handler(data);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Error in channel event handler for '{ChannelName}'", _name);
-        }
+        return DateTime.UtcNow;
     }
 
     /// <summary>
