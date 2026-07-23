@@ -1,0 +1,44 @@
+OddSockets .NET SDK - live two-client regression proof
+=======================================================
+
+Captured against the LIVE OddSockets platform (worker w002-oddsockets-1)
+using the SAME SDK a consumer installs. Two independent client connections
+(alice = subscriber, bob = publisher); anything alice receives can ONLY have
+travelled through the OddSockets worker - it is not a local echo. No mocks.
+
+Build:  docker build -f demo/Dockerfile -t oddsockets-csharp-demo .
+Run:    docker run --rm -e ODDSOCKETS_API_KEY="ak_..." oddsockets-csharp-demo
+
+--- Console output -------------------------------------------------------
+
+[connect] connecting both clients...
+[connect] alice = True, bob = True
+[alice] subscribed to demo-b91e4dbd86 (presence on)
+[bob] published, ack = { messageId = 1d0fac06-0e0c-401c-8353-5855422fe572, channel = demo-b91e4dbd86 }
+[alice] received bob's message (nonce matched) - real round-trip.
+[alice] presence: 1 user(s).
+[alice] unsubscribed.
+
+OK - cross-client round-trip verified on demo-b91e4dbd86
+
+[connect] connecting both clients...
+[both] subscribed to enh-4b52521642
+[bob] published messageId=60d1a0f5-edd5-4e1b-a7cb-193c5d59a7cc
+[bob] enhanced.StartTyping(bob) ...
+[bob] enhanced.AddReaction :thumbsup: ...
+[alice] received 'user_typing' from bob - broadcast round-trip.
+[alice] received 'reaction_added' (:thumbsup:) from bob - broadcast round-trip.
+
+OK - enhanced broadcast receive-path verified (user_typing + reaction_added)
+
+--- What this proves ----------------------------------------------------
+
+Scenario 1 (core pub/sub): bob publishes on his own connection; alice
+receives the message with a matching nonce on her separate connection, then
+reads live presence and unsubscribes - a genuine end-to-end round-trip.
+
+Scenario 2 (enhanced events): bob fires enhanced.StartTyping and
+enhanced.AddReaction; alice receives "user_typing" and "reaction_added" on
+her PUBLIC raw event surface (client.On) - proving the enhanced surface is
+wired to the real Socket.IO transport and broadcasts traverse the worker,
+not a local simulation.

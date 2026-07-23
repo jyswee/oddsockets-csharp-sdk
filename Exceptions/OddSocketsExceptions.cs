@@ -59,6 +59,17 @@ public class OddSocketsException : Exception
     public OddSocketsException(string message, Exception innerException) : base(message, innerException) { }
 
     /// <summary>
+    /// Initializes a new instance of the OddSocketsException class with a specified error message, error code, and a reference to the inner exception.
+    /// </summary>
+    /// <param name="message">The message that describes the error.</param>
+    /// <param name="errorCode">The error code.</param>
+    /// <param name="innerException">The exception that is the cause of the current exception.</param>
+    public OddSocketsException(string message, string errorCode, Exception innerException) : base(message, innerException)
+    {
+        ErrorCode = errorCode;
+    }
+
+    /// <summary>
     /// Initializes a new instance of the OddSocketsException class with serialized data.
     /// </summary>
     /// <param name="info">The SerializationInfo that holds the serialized object data about the exception being thrown.</param>
@@ -400,9 +411,8 @@ public class OddSocketsValidationException : OddSocketsException
     /// <param name="message">The message that describes the error.</param>
     /// <param name="errorCode">The error code.</param>
     /// <param name="innerException">The exception that is the cause of the current exception.</param>
-    public OddSocketsValidationException(string message, string errorCode, Exception innerException) : base(message, errorCode)
+    public OddSocketsValidationException(string message, string errorCode, Exception innerException) : base(message, errorCode, innerException)
     {
-        InnerException = innerException;
     }
 
     /// <summary>

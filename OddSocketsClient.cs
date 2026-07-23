@@ -27,7 +27,15 @@ public class OddSocketsClient : IDisposable
     private readonly SemaphoreSlim _connectionSemaphore;
     private readonly Timer? _heartbeatTimer;
 
-    private SocketIO? _socket;
+    // Correlates a request (subscribe/publish/get_presence/...) with its worker
+    // response event, keyed "responseEvent:channel".
+    private readonly ConcurrentDictionary<string, TaskCompletionSource<JsonElement>> _pendingRequests = new();
+    // Raw named-event listeners for the Socket.IO surface (enhanced broadcasts,
+    // request/response events consumed by EnhancedFeatures).
+    private readonly ConcurrentDictionary<string, List<Action<JsonElement>>> _rawListeners = new();
+    private readonly ConcurrentDictionary<string, List<Action<JsonElement>>> _rawOnceListeners = new();
+
+    private SocketIOClient.SocketIO? _socket;
     private string? _workerUrl;
     private string? _workerId;
     private ConnectionState _connectionState;
@@ -67,6 +75,13 @@ public class OddSocketsClient : IDisposable
     public object? SessionInfo => _sessionInfo;
 
     /// <summary>
+    /// Gets the enhanced (Slack-like) feature surface: reactions, typing,
+    /// threads, direct messages, presence, notifications and search. All
+    /// operations travel over the real Socket.IO connection to the worker.
+    /// </summary>
+    public OddSocketsEnhancedFeatures Enhanced { get; }
+
+    /// <summary>
     /// Initializes a new instance of the OddSocketsClient class.
     /// </summary>
     /// <param name="config">The configuration for the client.</param>
@@ -85,6 +100,8 @@ public class OddSocketsClient : IDisposable
         _eventHandlers = new ConcurrentDictionary<EventType, List<Func<object?, Task>>>();
         _connectionSemaphore = new SemaphoreSlim(1, 1);
         _connectionState = ConnectionState.Disconnected;
+
+        Enhanced = new OddSocketsEnhancedFeatures(this);
 
         // Generate user ID if not provided
         if (string.IsNullOrWhiteSpace(_config.UserId))
@@ -377,7 +394,7 @@ public class OddSocketsClient : IDisposable
     /// Gets the socket instance for internal use by channels.
     /// </summary>
     /// <returns>The socket instance.</returns>
-    internal SocketIO? GetSocket() => _socket;
+    internal SocketIOClient.SocketIO? GetSocket() => _socket;
 
     /// <summary>
     /// Emits an event to all registered handlers.
@@ -468,7 +485,8 @@ public class OddSocketsClient : IDisposable
             response.EnsureSuccessStatusCode();
 
             var content = await response.Content.ReadAsStringAsync(cts.Token);
-            var assignment = JsonSerializer.Deserialize<WorkerAssignment>(content);
+            var assignment = JsonSerializer.Deserialize<WorkerAssignment>(content,
+                new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
 
             if (assignment?.Url == null)
             {
@@ -515,7 +533,7 @@ public class OddSocketsClient : IDisposable
             ConnectionTimeout = TimeSpan.FromSeconds(_config.Timeout)
         };
 
-        _socket = new SocketIO(_workerUrl, options);
+        _socket = new SocketIOClient.SocketIO(_workerUrl, options);
 
         var connectTcs = new TaskCompletionSource<bool>();
         var errorTcs = new TaskCompletionSource<Exception>();
@@ -567,76 +585,170 @@ public class OddSocketsClient : IDisposable
             await EmitEventAsync(EventType.Error, new Exception(e));
         };
 
-        // Forward channel-related events to appropriate channels
-        _socket.On("message", async response =>
+        // Single catch-all handler: correlate pending request/response pairs,
+        // route channel message broadcasts, and fan out every named event to the
+        // raw listener surface (enhanced Slack-like broadcasts + once() responses).
+        _socket.OnAny((eventName, response) =>
         {
-            var data = response.GetValue<dynamic>();
-            var channelName = data?.channel?.ToString();
-            if (!string.IsNullOrEmpty(channelName) && _channels.TryGetValue(channelName, out var channel))
+            JsonElement data;
+            try
             {
-                await channel.HandleMessageAsync(data);
+                // Clone so the payload outlives the socket response, which may be
+                // disposed once this handler returns (deliveries run async).
+                data = response.GetValue<JsonElement>().Clone();
             }
-        });
+            catch
+            {
+                data = default;
+            }
 
-        _socket.On("subscribed", async response =>
-        {
-            var data = response.GetValue<dynamic>();
-            var channelName = data?.channel?.ToString();
-            if (!string.IsNullOrEmpty(channelName) && _channels.TryGetValue(channelName, out var channel))
-            {
-                await channel.HandleSubscribedAsync(data);
-            }
-        });
+            var channelName = TryGetString(data, "channel");
 
-        _socket.On("unsubscribed", async response =>
-        {
-            var data = response.GetValue<dynamic>();
-            var channelName = data?.channel?.ToString();
-            if (!string.IsNullOrEmpty(channelName) && _channels.TryGetValue(channelName, out var channel))
+            // 1) Complete any request awaiting this "responseEvent:channel".
+            if (channelName != null)
             {
-                await channel.HandleUnsubscribedAsync(data);
+                var key = eventName + ":" + channelName;
+                if (_pendingRequests.TryRemove(key, out var pending))
+                {
+                    pending.TrySetResult(data);
+                }
             }
-        });
 
-        _socket.On("published", async response =>
-        {
-            var data = response.GetValue<dynamic>();
-            var channelName = data?.channel?.ToString();
-            if (!string.IsNullOrEmpty(channelName) && _channels.TryGetValue(channelName, out var channel))
+            // 2) Deliver real incoming message broadcasts to the channel callback.
+            if (eventName == "message" && channelName != null &&
+                _channels.TryGetValue(channelName, out var channel))
             {
-                await channel.HandlePublishedAsync(data);
+                _ = channel.HandleMessageAsync(data);
             }
-        });
 
-        _socket.On("presence", async response =>
-        {
-            var data = response.GetValue<dynamic>();
-            var channelName = data?.channel?.ToString();
-            if (!string.IsNullOrEmpty(channelName) && _channels.TryGetValue(channelName, out var channel))
-            {
-                await channel.HandlePresenceAsync(data);
-            }
+            // 3) Fan out to raw named-event listeners (enhanced events, etc.).
+            DispatchRawListeners(eventName, data);
         });
+    }
 
-        _socket.On("presence_change", async response =>
-        {
-            var data = response.GetValue<dynamic>();
-            var channelName = data?.channel?.ToString();
-            if (!string.IsNullOrEmpty(channelName) && _channels.TryGetValue(channelName, out var channel))
-            {
-                await channel.HandlePresenceChangeAsync(data);
-            }
-        });
+    /// <summary>
+    /// Emits a raw named event over the Socket.IO connection. Used by the
+    /// enhanced feature surface and advanced consumers.
+    /// </summary>
+    /// <param name="eventName">The Socket.IO event name.</param>
+    /// <param name="payload">The payload to send.</param>
+    public async Task EmitAsync(string eventName, object payload)
+    {
+        if (_socket == null || _socket.Connected != true)
+            throw new OddSocketsConnectionException("Not connected to OddSockets", ErrorCodes.ConnectionFailed);
 
-        _socket.On("history", async response =>
+        await _socket.EmitAsync(eventName, payload);
+    }
+
+    /// <summary>
+    /// Registers a persistent listener for a raw named event (e.g. an enhanced
+    /// broadcast such as "reaction_added" or "user_typing").
+    /// </summary>
+    /// <param name="eventName">The Socket.IO event name.</param>
+    /// <param name="handler">Handler invoked with the event payload.</param>
+    public void On(string eventName, Action<JsonElement> handler)
+    {
+        if (handler == null) throw new ArgumentNullException(nameof(handler));
+        _rawListeners.AddOrUpdate(eventName,
+            new List<Action<JsonElement>> { handler },
+            (_, existing) => { lock (existing) { existing.Add(handler); } return existing; });
+    }
+
+    /// <summary>
+    /// Registers a one-shot listener for a raw named event. The handler is
+    /// removed after the first matching event.
+    /// </summary>
+    /// <param name="eventName">The Socket.IO event name.</param>
+    /// <param name="handler">Handler invoked once with the event payload.</param>
+    public void Once(string eventName, Action<JsonElement> handler)
+    {
+        if (handler == null) throw new ArgumentNullException(nameof(handler));
+        _rawOnceListeners.AddOrUpdate(eventName,
+            new List<Action<JsonElement>> { handler },
+            (_, existing) => { lock (existing) { existing.Add(handler); } return existing; });
+    }
+
+    /// <summary>
+    /// Removes raw named-event listeners.
+    /// </summary>
+    /// <param name="eventName">The Socket.IO event name.</param>
+    public void Off(string eventName)
+    {
+        _rawListeners.TryRemove(eventName, out _);
+        _rawOnceListeners.TryRemove(eventName, out _);
+    }
+
+    private void DispatchRawListeners(string eventName, JsonElement data)
+    {
+        if (_rawListeners.TryGetValue(eventName, out var persistent))
         {
-            var data = response.GetValue<dynamic>();
-            var channelName = data?.channel?.ToString();
-            if (!string.IsNullOrEmpty(channelName) && _channels.TryGetValue(channelName, out var channel))
-            {
-                await channel.HandleHistoryAsync(data);
-            }
-        });
+            Action<JsonElement>[] snapshot;
+            lock (persistent) { snapshot = persistent.ToArray(); }
+            foreach (var handler in snapshot) SafeInvokeRaw(handler, data);
+        }
+
+        if (_rawOnceListeners.TryRemove(eventName, out var once))
+        {
+            foreach (var handler in once) SafeInvokeRaw(handler, data);
+        }
+    }
+
+    private void SafeInvokeRaw(Action<JsonElement> handler, JsonElement data)
+    {
+        try
+        {
+            handler(data);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error in raw event handler");
+        }
+    }
+
+    /// <summary>
+    /// Sends a request event and awaits the correlated worker response event,
+    /// matched on the payload's "channel" field. Used by channel operations.
+    /// </summary>
+    /// <param name="emitEvent">The request event name.</param>
+    /// <param name="payload">The request payload (must include "channel").</param>
+    /// <param name="responseEvent">The expected response event name.</param>
+    /// <param name="channel">The channel to correlate on.</param>
+    /// <param name="timeoutMs">Timeout in milliseconds.</param>
+    /// <returns>The response payload as a JsonElement.</returns>
+    internal async Task<JsonElement> RequestAsync(string emitEvent, object payload, string responseEvent, string channel, int timeoutMs = 15000)
+    {
+        if (_socket == null || _socket.Connected != true)
+            throw new OddSocketsConnectionException("Not connected to OddSockets", ErrorCodes.ConnectionFailed);
+
+        var key = responseEvent + ":" + channel;
+        var tcs = new TaskCompletionSource<JsonElement>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _pendingRequests[key] = tcs;
+
+        try
+        {
+            await _socket.EmitAsync(emitEvent, payload);
+
+            var completed = await Task.WhenAny(tcs.Task, Task.Delay(timeoutMs));
+            if (completed != tcs.Task)
+                throw new OddSocketsConnectionException($"Request timed out: {emitEvent}", ErrorCodes.OperationTimeout);
+
+            return await tcs.Task;
+        }
+        finally
+        {
+            _pendingRequests.TryRemove(key, out _);
+        }
+    }
+
+    private static string? TryGetString(JsonElement element, string propertyName)
+    {
+        if (element.ValueKind == JsonValueKind.Object &&
+            element.TryGetProperty(propertyName, out var value) &&
+            value.ValueKind == JsonValueKind.String)
+        {
+            return value.GetString();
+        }
+        return null;
     }
 
     private async Task ScheduleReconnectAsync(CancellationToken cancellationToken)
@@ -719,6 +831,6 @@ public class OddSocketsClient : IDisposable
     {
         public string? Url { get; set; }
         public string? WorkerId { get; set; }
-        public string? Session { get; set; }
+        public JsonElement? Session { get; set; }
     }
 }
