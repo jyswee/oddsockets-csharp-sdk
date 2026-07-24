@@ -408,6 +408,68 @@ public class DashboardService
 }
 ```
 
+## Enhanced Features
+
+Beyond core pub/sub, OddSockets ships a Slack-like **enhanced surface** — reactions,
+typing indicators, threads, read receipts, presence/status, notifications, DMs,
+channel management, message editing and search. It lives on `client.Enhanced`.
+The pattern is always the same:
+
+1. **Send** an action with a `client.Enhanced.*Async(...)` method (PascalCase,
+   positional arguments).
+2. **Receive** the paired broadcast with `client.On("<event>", data => ...)` — the
+   worker forwards every enhanced broadcast onto the client's raw event surface
+   (delivered as a `System.Text.Json.JsonElement`).
+
+```csharp
+using OddSockets;
+using OddSockets.Models;
+using System.Text.Json;
+
+var config = new OddSocketsConfigBuilder()
+    .WithApiKey("ak_live_your_api_key_here")
+    .WithUserId("alice")
+    .Build();
+
+using var client = new OddSocketsClient(config);
+await client.ConnectAsync();
+
+var channel = client.Channel("room-42");
+await channel.SubscribeAsync(message => { /* ... */ },
+    SubscribeOptions.Builder().WithPresence(true).Build());
+
+// Receive-path: broadcasts from other users on the channel
+client.On("user_typing",    data => Console.WriteLine($"{data.GetProperty("userId")} is typing"));
+client.On("reaction_added", data => Console.WriteLine($"reaction {data.GetProperty("emoji")}"));
+client.On("thread_reply",   data => Console.WriteLine("new thread reply"));
+
+// Send-path: enhanced actions over the live socket
+await client.Enhanced.StartTypingAsync("alice", "room-42");
+await client.Enhanced.AddReactionAsync("msg-1", "room-42", ":thumbsup:", "alice", "Alice");
+await client.Enhanced.ThreadReplyAsync("room-42", "msg-1", "Replying in the thread", "alice", "Alice");
+```
+
+Each area exposes methods on `client.Enhanced`; the worker broadcasts the paired
+events which you handle with `client.On(...)`. Query methods (`Get*Async`,
+`Search*Async`) return a `Task<JsonElement>` that resolves with the worker response.
+
+| Area | Requests (`client.Enhanced.*`) | Broadcast events (`client.On`) |
+|------|--------------------------------|--------------------------------|
+| Typing | `StartTypingAsync`, `StopTypingAsync` | `user_typing`, `user_stopped_typing` |
+| Reactions | `AddReactionAsync`, `RemoveReactionAsync`, `GetReactionsAsync` | `reaction_added`, `reaction_removed` |
+| Threads | `ThreadReplyAsync`, `GetThreadAsync`, `SubscribeThreadAsync`, `FollowThreadAsync`, `UnfollowThreadAsync`, `MarkThreadReadAsync` | `thread_reply`, `thread_subscribed`, `thread_followed`, `thread_read_updated` |
+| Read receipts | `MarkReadAsync`, `MarkAllReadAsync`, `GetUnreadCountsAsync` | `user_read`, `unread_count_updated`, `all_marked_read` |
+| Messages | `EditMessageAsync`, `DeleteMessageAsync`, `PinMessageAsync`, `UnpinMessageAsync`, `GetPinnedMessagesAsync` | `message_edited`, `message_deleted`, `message_pinned`, `message_unpinned` |
+| Presence & status | `SetStatusAsync`, `SetCustomStatusAsync`, `ClearCustomStatusAsync`, `SetDNDAsync`, `ClearDNDAsync`, `GetUserPresenceAsync` | `user_status_changed`, `custom_status_updated`, `dnd_status_changed` |
+| Channels | `CreateChannelAsync`, `UpdateChannelAsync`, `ArchiveChannelAsync`, `InviteToChannelAsync`, `JoinChannelAsync`, `LeaveChannelAsync`, `GetChannelMembersAsync` | `channel_created`, `channel_updated`, `user_invited`, `user_joined_channel`, `user_left_channel` |
+| DMs | `CreateDMAsync`, `SendDMAsync`, `GetDMConversationsAsync` | `dm_created`, `dm_received` |
+| Notifications | `SubscribeNotificationsAsync`, `GetNotificationsAsync`, `MarkNotificationReadAsync`, `ClearNotificationsAsync` | `notification`, `notification_read`, `notifications_cleared` |
+| Search | `SearchMessagesAsync`, `SearchInChannelAsync`, `SearchByUserAsync`, `FilterMessagesAsync` | (query results returned via `Task<JsonElement>`) |
+
+For any worker event not wrapped above, subscribe with the raw
+`client.On("<event>", handler)` API — all enhanced broadcasts are forwarded onto
+the client surface.
+
 ## API Reference
 
 ### OddSocketsClient
@@ -419,7 +481,9 @@ public class DashboardService
 | `Channel(string)` | Get or create a channel |
 | `PublishBulkAsync(IEnumerable<BulkMessage>)` | Publish multiple messages |
 | `On(EventType, Func<object?, Task>)` | Add event handler |
+| `On(string, Action<JsonElement>)` | Add raw named-event handler (enhanced broadcasts) |
 | `Off(EventType, Func<object?, Task>?)` | Remove event handler |
+| `Enhanced` | Enhanced (Slack-like) feature surface |
 
 ### OddSocketsChannel
 
