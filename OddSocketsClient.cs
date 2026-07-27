@@ -604,8 +604,18 @@ public class OddSocketsClient : IDisposable
 
             var channelName = TryGetString(data, "channel");
 
+            // The worker emits "history" both as the explicit get_history
+            // RESPONSE (query:true) and as a fire-and-forget on-join snapshot
+            // (~10 msgs, no query flag). Only the query:true response may complete
+            // a pending GetHistory request; ignore the snapshot here so it can't
+            // resolve GetHistory with the wrong data. BUG-2026-0727-0012.
+            var isHistorySnapshot = eventName == "history" &&
+                !(data.ValueKind == JsonValueKind.Object &&
+                  data.TryGetProperty("query", out var q) &&
+                  q.ValueKind == JsonValueKind.True);
+
             // 1) Complete any request awaiting this "responseEvent:channel".
-            if (channelName != null)
+            if (channelName != null && !isHistorySnapshot)
             {
                 var key = eventName + ":" + channelName;
                 if (_pendingRequests.TryRemove(key, out var pending))
