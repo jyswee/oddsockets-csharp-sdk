@@ -458,8 +458,8 @@ public class OddSocketsClient : IDisposable
     {
         try
         {
-            // Discover the optimal manager URL automatically
-            var managerUrl = await ManagerDiscovery.Instance.DiscoverManagerUrlAsync(_config.ApiKey);
+            // Use the manager this client was configured for, never a substitute
+            var managerUrl = await ManagerDiscovery.Instance.DiscoverManagerUrlAsync(_config.ApiKey, _config.ManagerUrl);
             
             var requestUri = $"{managerUrl}/api/cluster/select-worker";
             var queryParams = new List<string>();
@@ -503,15 +503,16 @@ public class OddSocketsClient : IDisposable
                 WorkerUrl = _workerUrl,
                 Session = assignment.Session,
                 ClientIdentifier = _clientIdentifier,
-                ManagerUrl = managerUrl // Include discovered manager URL for debugging
+                ManagerUrl = managerUrl // Include the manager actually used, for debugging
             });
         }
         catch (Exception error)
         {
-            // If manager is offline, try fallback logic
+            // The configured manager is the only manager: report the failure rather
+            // than quietly connecting somewhere else.
             if (error.Message.Contains("ECONNREFUSED") || error.Message.Contains("ENOTFOUND"))
             {
-                throw new OddSocketsConnectionException("Manager is offline. Cannot assign worker without session stickiness.", ErrorCodes.ConnectionFailed);
+                throw new OddSocketsConnectionException($"Manager {_config.ManagerUrl} is unreachable. Cannot assign worker without session stickiness.", ErrorCodes.ConnectionFailed);
             }
             throw;
         }

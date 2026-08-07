@@ -43,7 +43,9 @@ public class BasicUsage
         // Create OddSockets client using builder pattern
         var config = new OddSocketsConfigBuilder()
             .WithApiKey("ak_live_1234567890abcdef") // Replace with your API key
-            .WithManagerUrl("https://connect.oddsockets.tyga.network") // Optional: defaults to this
+            // Optional: point at a self-hosted or staging manager. Omit to use
+            // ODDSOCKETS_MANAGER_URL, or the public endpoint if that is unset.
+            .WithManagerUrl("https://connect.oddsockets.tyga.network")
             .WithUserId("user123") // Optional: defaults to auto-generated
             .WithAutoConnect(false) // We'll connect manually for this example
             .WithReconnectAttempts(3)

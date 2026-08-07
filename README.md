@@ -117,6 +117,20 @@ var config = new OddSocketsConfigBuilder()
     .Build();
 ```
 
+### Manager URL
+
+The manager URL is resolved in this order:
+
+1. `WithManagerUrl(...)` (or `OddSocketsConfig.ManagerUrl`)
+2. the `ODDSOCKETS_MANAGER_URL` environment variable
+3. `https://connect.oddsockets.tyga.network`
+
+It must be an absolute `http://` or `https://` URL, otherwise `Build()` throws
+`ArgumentException` with the message `Invalid managerUrl: <value>`. Point it at a
+self-hosted or staging manager and the SDK will use that endpoint and nothing else: if it
+is unreachable the connection fails with the underlying error rather than falling back to
+the public endpoint.
+
 ### Using Object Initializer
 
 ```csharp
@@ -500,7 +514,7 @@ the client surface.
 | Property | Type | Default | Description |
 |----------|------|---------|-------------|
 | `ApiKey` | `string` | Required | Your OddSockets API key |
-| `ManagerUrl` | `string` | `https://connect.oddsockets.tyga.network` | Manager service URL |
+| `ManagerUrl` | `string` | `ODDSOCKETS_MANAGER_URL`, else `https://connect.oddsockets.tyga.network` | Manager service URL |
 | `UserId` | `string?` | Auto-generated | User identifier |
 | `AutoConnect` | `bool` | `true` | Auto-connect on creation |
 | `ReconnectAttempts` | `int` | `5` | Max reconnection attempts |
