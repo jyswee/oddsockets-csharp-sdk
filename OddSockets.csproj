@@ -56,8 +56,10 @@
     <PackageReference Include="Microsoft.Extensions.Options" Version="8.0.0" />
     <PackageReference Include="Microsoft.Extensions.Http" Version="8.0.0" />
     
-    <!-- JSON Serialization -->
-    <PackageReference Include="System.Text.Json" Version="8.0.0" />
+    <!-- JSON Serialization.
+         8.0.5 is the first release clear of GHSA-8g4q-xg66-9fp4 and
+         GHSA-hh2w-p6rv-4g7w; 8.0.0 shipped both to every consumer. -->
+    <PackageReference Include="System.Text.Json" Version="8.0.5" />
     
     <!-- WebSocket Client -->
     <PackageReference Include="SocketIOClient" Version="3.1.0" />

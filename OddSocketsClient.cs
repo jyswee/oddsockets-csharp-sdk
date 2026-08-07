@@ -484,7 +484,14 @@ public class OddSocketsClient : IDisposable
             var response = await _httpClient.SendAsync(request, cts.Token);
             response.EnsureSuccessStatusCode();
 
+            // The cancellable overload is .NET 5+; netstandard2.0, which this
+            // package also targets, has no way to cancel the body read. The
+            // request itself is already bounded by cts.
+#if NET5_0_OR_GREATER
             var content = await response.Content.ReadAsStringAsync(cts.Token);
+#else
+            var content = await response.Content.ReadAsStringAsync();
+#endif
             var assignment = JsonSerializer.Deserialize<WorkerAssignment>(content,
                 new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
 

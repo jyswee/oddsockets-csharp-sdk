@@ -542,15 +542,15 @@ public class OddSocketsChannel
 
     private bool EvaluateFilter(Message message, string filterExpression)
     {
-        try
-        {
-            var messageStr = JsonSerializer.Serialize(message.Data);
-            return messageStr.Contains(filterExpression, StringComparison.OrdinalIgnoreCase);
-        }
-        catch
-        {
-            return true;
-        }
+        // A filter that cannot be evaluated is not a match. Swallowing the
+        // failure and returning true delivered messages the subscriber had
+        // explicitly filtered out, while looking like the filter had run.
+        // The exception surfaces to the caller's handler, which logs it.
+        var messageStr = JsonSerializer.Serialize(message.Data);
+
+        // IndexOf rather than Contains(string, StringComparison): that overload
+        // does not exist on netstandard2.0, which this package also targets.
+        return messageStr.IndexOf(filterExpression, StringComparison.OrdinalIgnoreCase) >= 0;
     }
 
     private static string? GetString(JsonElement element, string propertyName)
