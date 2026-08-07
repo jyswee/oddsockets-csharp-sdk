@@ -6,3 +6,5 @@ obj/
 .DS_Store
 *.log
 JAVASCRIPT_PATTERN_COMPLIANCE.md
+CLAUDE.md
+AGENTS.md

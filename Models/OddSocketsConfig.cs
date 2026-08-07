@@ -14,9 +14,12 @@ public class OddSocketsConfig
     public string ApiKey { get; set; } = string.Empty;
 
     /// <summary>
-    /// Gets or sets the manager URL (optional, defaults to https://connect.oddsockets.tyga.network).
+    /// Gets or sets the manager URL (optional). When not set explicitly it falls back to the
+    /// ODDSOCKETS_MANAGER_URL environment variable and then to the public default endpoint.
+    /// A URL set here is always used verbatim; the client never substitutes the default
+    /// endpoint when the configured manager is unreachable.
     /// </summary>
-    public string ManagerUrl { get; set; } = "https://connect.oddsockets.tyga.network";
+    public string ManagerUrl { get; set; } = ManagerDiscovery.ResolveManagerUrl(null);
 
     /// <summary>
     /// Gets or sets the user identifier (optional, auto-generated if not provided).
@@ -58,8 +61,7 @@ public class OddSocketsConfig
         if (string.IsNullOrWhiteSpace(ManagerUrl))
             throw new ArgumentException("Manager URL is required", nameof(ManagerUrl));
 
-        if (!Uri.TryCreate(ManagerUrl, UriKind.Absolute, out _))
-            throw new ArgumentException("Invalid manager URL format", nameof(ManagerUrl));
+        ManagerUrl = ManagerDiscovery.ResolveManagerUrl(ManagerUrl);
 
         if (ReconnectAttempts < 0)
             throw new ArgumentException("Reconnect attempts must be non-negative", nameof(ReconnectAttempts));
@@ -91,9 +93,10 @@ public class OddSocketsConfigBuilder
     }
 
     /// <summary>
-    /// Sets the manager URL.
+    /// Sets the manager URL. When left unset the ODDSOCKETS_MANAGER_URL environment
+    /// variable is used, falling back to the public default endpoint.
     /// </summary>
-    /// <param name="managerUrl">The manager URL.</param>
+    /// <param name="managerUrl">The manager URL, must be an absolute http(s) URL.</param>
     /// <returns>The builder instance.</returns>
     public OddSocketsConfigBuilder WithManagerUrl(string managerUrl)
     {
