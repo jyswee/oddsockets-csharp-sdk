@@ -131,6 +131,46 @@ self-hosted or staging manager and the SDK will use that endpoint and nothing el
 is unreachable the connection fails with the underlying error rather than falling back to
 the public endpoint.
 
+### Token auth for game clients (`TokenProvider`)
+
+Game and untrusted clients should never embed a raw API key. Instead, supply an
+async `TokenProvider` that exchanges a player/session identity for a short-lived
+minted realtime token via the OddSockets `/v1/token` front door. When a
+`TokenProvider` is set the SDK uses it **instead of** an `ApiKey`: it resolves a
+fresh token before every (re)connect, presents it on worker selection and in the
+Socket.IO handshake, and automatically refreshes it ahead of expiry (emitting an
+`EventType.TokenRefreshed` event), swapping the new token into the live
+connection without a forced reconnect.
+
+```csharp
+var config = new OddSocketsConfigBuilder()
+    .WithTokenProvider(async () =>
+    {
+        // Exchange your player's JWT for a minted OddSockets token.
+        using var http = new HttpClient();
+        var req = new HttpRequestMessage(HttpMethod.Post,
+            "https://connect.oddsockets.tyga.network/v1/token");
+        req.Headers.Authorization =
+            new AuthenticationHeaderValue("Bearer", playerJwt);
+        var resp = await http.SendAsync(req);
+        resp.EnsureSuccessStatusCode();
+        var body = await resp.Content.ReadFromJsonAsync<OddSocketsToken>();
+        return body!; // { Token, ExpiresAt, Exp, BaseUrl, Identity }
+    })
+    // .WithTokenRefreshLeadMs(120000) // Optional, default: refresh 2 min before expiry
+    .WithManagerUrl("https://connect.oddsockets.tyga.network")
+    .WithUserId("player-42")
+    .Build();
+
+var client = new OddSocketsClient(config);
+client.On(EventType.TokenRefreshed, _ => Console.WriteLine("token refreshed"));
+await client.ConnectAsync();
+```
+
+The provider is called on every connect and again shortly before the token
+expires, so a returned token only needs to be valid at the moment it is minted.
+No `ApiKey` is required in this mode.
+
 ### Using Object Initializer
 
 ```csharp
@@ -513,7 +553,9 @@ the client surface.
 
 | Property | Type | Default | Description |
 |----------|------|---------|-------------|
-| `ApiKey` | `string` | Required | Your OddSockets API key |
+| `ApiKey` | `string` | Required (unless `TokenProvider` set) | Your OddSockets API key |
+| `TokenProvider` | `Func<Task<OddSocketsToken>>?` | `null` | Async callback minting a short-lived token; used instead of `ApiKey` |
+| `TokenRefreshLeadMs` | `int` | `120000` | How long before expiry a minted token is refreshed |
 | `ManagerUrl` | `string` | `ODDSOCKETS_MANAGER_URL`, else `https://connect.oddsockets.tyga.network` | Manager service URL |
 | `UserId` | `string?` | Auto-generated | User identifier |
 | `AutoConnect` | `bool` | `true` | Auto-connect on creation |

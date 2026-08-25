@@ -3,15 +3,53 @@ using System.ComponentModel.DataAnnotations;
 namespace OddSockets.Models;
 
 /// <summary>
+/// A minted realtime token returned by a <see cref="OddSocketsConfig.TokenProvider"/>.
+/// Only <see cref="Token"/> is required; the expiry fields let the SDK schedule an
+/// ahead-of-expiry refresh without decoding the JWT itself. (FEAT-2026-0824-0040)
+/// </summary>
+public class OddSocketsToken
+{
+    /// <summary>The minted realtime token (JWT) presented instead of an API key.</summary>
+    public string Token { get; set; } = string.Empty;
+
+    /// <summary>Optional ISO-8601 or epoch expiry.</summary>
+    public string? ExpiresAt { get; set; }
+
+    /// <summary>Optional epoch-seconds expiry claim.</summary>
+    public long? Exp { get; set; }
+
+    /// <summary>Optional manager base URL the token is scoped to.</summary>
+    public string? BaseUrl { get; set; }
+
+    /// <summary>Optional resolved caller identity.</summary>
+    public string? Identity { get; set; }
+}
+
+/// <summary>
 /// Configuration options for the OddSockets client.
 /// </summary>
 public class OddSocketsConfig
 {
     /// <summary>
-    /// Gets or sets the OddSockets API key (required).
+    /// Gets or sets the OddSockets API key. Omit when authenticating with a
+    /// <see cref="TokenProvider"/> instead.
     /// </summary>
-    [Required]
     public string ApiKey { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Gets or sets an async callback that supplies a fresh minted realtime token,
+    /// used INSTEAD of an <see cref="ApiKey"/> by game clients that exchange a
+    /// player JWT for a short-lived scoped token via the OddSockets /v1/token front
+    /// door. Called before every (re)connect and again shortly before the token
+    /// expires. (FEAT-2026-0824-0040)
+    /// </summary>
+    public Func<Task<OddSocketsToken>>? TokenProvider { get; set; }
+
+    /// <summary>
+    /// Gets or sets how many milliseconds before expiry a minted token is refreshed
+    /// (default: 120000).
+    /// </summary>
+    public int TokenRefreshLeadMs { get; set; } = 120000;
 
     /// <summary>
     /// Gets or sets the manager URL (optional). When not set explicitly it falls back to the
@@ -52,11 +90,16 @@ public class OddSocketsConfig
     /// <exception cref="ArgumentException">Thrown when configuration is invalid.</exception>
     public void Validate()
     {
-        if (string.IsNullOrWhiteSpace(ApiKey))
-            throw new ArgumentException("API key is required", nameof(ApiKey));
+        // Either an API key or a TokenProvider is acceptable. A game client using
+        // minted tokens has no ak_ key, so the format check only applies to key mode.
+        if (TokenProvider == null)
+        {
+            if (string.IsNullOrWhiteSpace(ApiKey))
+                throw new ArgumentException("Either an API key or a TokenProvider is required", nameof(ApiKey));
 
-        if (!ApiKey.StartsWith("ak_"))
-            throw new ArgumentException("Invalid API key format", nameof(ApiKey));
+            if (!ApiKey.StartsWith("ak_"))
+                throw new ArgumentException("Invalid API key format", nameof(ApiKey));
+        }
 
         if (string.IsNullOrWhiteSpace(ManagerUrl))
             throw new ArgumentException("Manager URL is required", nameof(ManagerUrl));
@@ -89,6 +132,28 @@ public class OddSocketsConfigBuilder
     public OddSocketsConfigBuilder WithApiKey(string apiKey)
     {
         _config.ApiKey = apiKey;
+        return this;
+    }
+
+    /// <summary>
+    /// Sets an async token provider used instead of an API key. (FEAT-2026-0824-0040)
+    /// </summary>
+    /// <param name="tokenProvider">Callback returning a fresh minted realtime token.</param>
+    /// <returns>The builder instance.</returns>
+    public OddSocketsConfigBuilder WithTokenProvider(Func<Task<OddSocketsToken>> tokenProvider)
+    {
+        _config.TokenProvider = tokenProvider;
+        return this;
+    }
+
+    /// <summary>
+    /// Sets how many milliseconds before expiry a minted token is refreshed.
+    /// </summary>
+    /// <param name="leadMs">The refresh lead time in milliseconds.</param>
+    /// <returns>The builder instance.</returns>
+    public OddSocketsConfigBuilder WithTokenRefreshLeadMs(int leadMs)
+    {
+        _config.TokenRefreshLeadMs = leadMs;
         return this;
     }
 
