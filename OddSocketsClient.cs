@@ -44,6 +44,13 @@ public class OddSocketsClient : IDisposable
     private string _clientIdentifier;
     private object? _sessionInfo;
 
+    // Minted-token auth (FEAT-2026-0824-0040). Populated only when the config
+    // supplies a TokenProvider instead of an ApiKey.
+    private string? _token;
+    private long _tokenExpiresAt; // epoch millis, 0 = unknown
+    private Timer? _tokenRefreshTimer;
+    private bool IsTokenMode => _config.TokenProvider != null;
+
     /// <summary>
     /// Gets the current connection state.
     /// </summary>
@@ -172,6 +179,14 @@ public class OddSocketsClient : IDisposable
 
             try
             {
+                // Step 0: In token mode, resolve a fresh minted token before every
+                // (re)connect so both the manager select-worker call and the worker
+                // handshake carry a valid token. (FEAT-2026-0824-0040)
+                if (IsTokenMode)
+                {
+                    await ResolveTokenAsync();
+                }
+
                 // Step 1: Get worker assignment from manager
                 await GetWorkerAssignmentAsync(cancellationToken);
 
@@ -183,6 +198,12 @@ public class OddSocketsClient : IDisposable
 
                 // Start heartbeat
                 StartHeartbeat();
+
+                // Arm the ahead-of-expiry refresh once connected.
+                if (IsTokenMode)
+                {
+                    ScheduleTokenRefresh();
+                }
 
                 _logger.LogInformation("Successfully connected to OddSockets");
                 await EmitEventAsync(EventType.Connected, new { UserId, Timestamp = DateTime.UtcNow });
@@ -235,6 +256,10 @@ public class OddSocketsClient : IDisposable
 
             // Stop heartbeat
             StopHeartbeat();
+
+            // Cancel any pending token refresh.
+            _tokenRefreshTimer?.Dispose();
+            _tokenRefreshTimer = null;
 
             // Unsubscribe from all channels
             var unsubscribeTasks = _channels.Values.Select(channel => channel.UnsubscribeAsync(cancellationToken));
@@ -429,9 +454,11 @@ public class OddSocketsClient : IDisposable
     /// <returns>Client identifier string</returns>
     private string GenerateClientIdentifier()
     {
-        // Create a consistent identifier based on API key and user ID
+        // Create a consistent identifier based on API key and user ID. In token
+        // mode there is no API key to seed from, so fall back to a placeholder.
         var baseId = _config.UserId ?? "default";
-        var apiKeyHash = HashString(_config.ApiKey);
+        var seed = string.IsNullOrEmpty(_config.ApiKey) ? "token-client" : _config.ApiKey;
+        var apiKeyHash = HashString(seed);
         return $"{apiKeyHash}_{baseId}";
     }
 
@@ -463,9 +490,17 @@ public class OddSocketsClient : IDisposable
             
             var requestUri = $"{managerUrl}/api/cluster/select-worker";
             var queryParams = new List<string>();
-            
-            queryParams.Add($"apiKey={Uri.EscapeDataString(_config.ApiKey)}");
-            
+
+            // In token mode present the minted token instead of an API key.
+            if (IsTokenMode)
+            {
+                queryParams.Add($"token={Uri.EscapeDataString(_token ?? string.Empty)}");
+            }
+            else
+            {
+                queryParams.Add($"apiKey={Uri.EscapeDataString(_config.ApiKey)}");
+            }
+
             if (!string.IsNullOrWhiteSpace(_config.UserId))
             {
                 queryParams.Add($"userId={Uri.EscapeDataString(_config.UserId)}");
@@ -530,13 +565,21 @@ public class OddSocketsClient : IDisposable
         if (string.IsNullOrWhiteSpace(_workerUrl))
             throw new OddSocketsConnectionException("No worker URL available", ErrorCodes.WorkerAssignmentFailed);
 
+        // In token mode present the minted token in the handshake auth; otherwise
+        // the API key. (FEAT-2026-0824-0039)
+        var auth = new Dictionary<string, string> { ["userId"] = UserId };
+        if (IsTokenMode)
+        {
+            auth["token"] = _token ?? string.Empty;
+        }
+        else
+        {
+            auth["apiKey"] = _config.ApiKey;
+        }
+
         var options = new SocketIOOptions
         {
-            Auth = new Dictionary<string, string>
-            {
-                ["apiKey"] = _config.ApiKey,
-                ["userId"] = UserId
-            },
+            Auth = auth,
             Transport = SocketIOClient.Transport.TransportProtocol.WebSocket,
             ConnectionTimeout = TimeSpan.FromSeconds(_config.Timeout)
         };
@@ -838,11 +881,129 @@ public class OddSocketsClient : IDisposable
         }
 
         _heartbeatTimer?.Dispose();
+        _tokenRefreshTimer?.Dispose();
         _connectionSemaphore.Dispose();
         _socket?.Dispose();
         _httpClient.Dispose();
 
         GC.SuppressFinalize(this);
+    }
+
+    /// <summary>
+    /// Invokes the configured TokenProvider and caches the fresh token along with
+    /// its computed expiry (epoch millis). (FEAT-2026-0824-0040)
+    /// </summary>
+    private async Task ResolveTokenAsync()
+    {
+        var tok = await _config.TokenProvider!();
+        if (tok == null || string.IsNullOrEmpty(tok.Token))
+            throw new OddSocketsConnectionException("Token provider returned an empty token", ErrorCodes.ConnectionFailed);
+
+        _token = tok.Token;
+        _tokenExpiresAt = ExpiryFromToken(tok);
+        _logger.LogInformation("Resolved minted token (identity: {Identity})", tok.Identity ?? "n/a");
+    }
+
+    /// <summary>
+    /// Arms a one-shot timer to re-resolve the token ahead of its expiry, swap it
+    /// into the live socket handshake auth, emit token_refreshed, then re-arm.
+    /// </summary>
+    private void ScheduleTokenRefresh()
+    {
+        _tokenRefreshTimer?.Dispose();
+        _tokenRefreshTimer = null;
+
+        if (_tokenExpiresAt <= 0) return; // Unknown expiry: cannot schedule.
+
+        var delayMs = _tokenExpiresAt - DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - _config.TokenRefreshLeadMs;
+        if (delayMs < 0) delayMs = 0;
+
+        _tokenRefreshTimer = new Timer(async _ =>
+        {
+            if (_connectionState != ConnectionState.Connected) return;
+            try
+            {
+                await ResolveTokenAsync();
+                // Swap the fresh token into the live handshake auth in place so a
+                // future transport reconnect carries it; no active reconnect is forced.
+                if (_socket != null)
+                {
+                    _socket.Options.Auth = new Dictionary<string, string>
+                    {
+                        ["token"] = _token ?? string.Empty,
+                        ["userId"] = UserId
+                    };
+                }
+                await EmitEventAsync(EventType.TokenRefreshed, new { ExpiresAt = _tokenExpiresAt });
+                ScheduleTokenRefresh(); // Re-arm for the next cycle.
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Token refresh failed");
+                await EmitEventAsync(EventType.Error, ex);
+            }
+        }, null, (long)delayMs, Timeout.Infinite);
+    }
+
+    /// <summary>
+    /// Derives the token expiry in epoch millis, preferring the explicit ExpiresAt
+    /// / Exp fields and falling back to decoding the JWT.
+    /// </summary>
+    private static long ExpiryFromToken(OddSocketsToken tok)
+    {
+        if (!string.IsNullOrEmpty(tok.ExpiresAt))
+        {
+            var ms = ParseExpiresAt(tok.ExpiresAt!);
+            if (ms > 0) return ms;
+        }
+        if (tok.Exp.HasValue && tok.Exp.Value > 0)
+            return tok.Exp.Value * 1000;
+        return ExpiryFromJwt(tok.Token);
+    }
+
+    /// <summary>
+    /// Interprets an ExpiresAt value that may be a numeric epoch (seconds or millis)
+    /// or an ISO-8601 timestamp, returning epoch millis.
+    /// </summary>
+    private static long ParseExpiresAt(string s)
+    {
+        if (long.TryParse(s, out var n))
+            return n < 1_000_000_000_000L ? n * 1000 : n;
+
+        if (DateTimeOffset.TryParse(s, System.Globalization.CultureInfo.InvariantCulture,
+                System.Globalization.DateTimeStyles.AssumeUniversal | System.Globalization.DateTimeStyles.AdjustToUniversal,
+                out var dto))
+            return dto.ToUnixTimeMilliseconds();
+
+        return 0;
+    }
+
+    /// <summary>
+    /// Base64url-decodes a JWT payload and returns its exp claim as epoch millis,
+    /// or 0 when the token is not a decodable JWT.
+    /// </summary>
+    private static long ExpiryFromJwt(string token)
+    {
+        var parts = token.Split('.');
+        if (parts.Length < 2) return 0;
+        try
+        {
+            var payload = parts[1].Replace('-', '+').Replace('_', '/');
+            switch (payload.Length % 4)
+            {
+                case 2: payload += "=="; break;
+                case 3: payload += "="; break;
+            }
+            var bytes = Convert.FromBase64String(payload);
+            using var doc = JsonDocument.Parse(bytes);
+            if (doc.RootElement.TryGetProperty("exp", out var exp) && exp.TryGetInt64(out var expSec))
+                return expSec * 1000;
+        }
+        catch
+        {
+            // Not a decodable JWT; expiry unknown.
+        }
+        return 0;
     }
 
     private class WorkerAssignment

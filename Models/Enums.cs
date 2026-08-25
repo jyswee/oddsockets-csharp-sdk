@@ -74,7 +74,13 @@ public enum EventType
     /// <summary>
     /// Emitted when reconnection attempts are exhausted.
     /// </summary>
-    MaxReconnectAttemptsReached
+    MaxReconnectAttemptsReached,
+
+    /// <summary>
+    /// Emitted when a minted realtime token is refreshed ahead of expiry
+    /// (token authentication only). (FEAT-2026-0824-0040)
+    /// </summary>
+    TokenRefreshed
 }
 
 /// <summary>
@@ -117,6 +123,7 @@ public static class EnumExtensions
             EventType.Presence => "presence",
             EventType.WorkerAssigned => "worker_assigned",
             EventType.MaxReconnectAttemptsReached => "max_reconnect_attempts_reached",
+            EventType.TokenRefreshed => "token_refreshed",
             _ => "unknown"
         };
     }
