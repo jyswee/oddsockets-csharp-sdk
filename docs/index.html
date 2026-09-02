@@ -697,6 +697,12 @@
                         </a>
                     </li>
                     <li class="nav-item">
+                        <a href="#challenges" class="nav-link">
+                            <i class="fas fa-trophy nav-icon"></i>
+                            Challenges &amp; Leaderboards
+                        </a>
+                    </li>
+                    <li class="nav-item">
                         <a href="#performance" class="nav-link">
                             <i class="fas fa-chart-line nav-icon"></i>
                             Performance
@@ -1086,6 +1092,70 @@ var thread = await client.Enhanced.GetThreadAsync("thread-123");</code></pre>
                 <p>For any worker event not wrapped above, subscribe with the raw
                 <code>client.On("&lt;event&gt;", handler)</code> API &mdash; all enhanced broadcasts are
                 forwarded onto the client surface.</p>
+            </section>
+
+            <section id="challenges" class="section">
+                <h2 class="section-title">
+                    <i class="fas fa-trophy"></i>
+                    Challenges &amp; Leaderboards
+                </h2>
+
+                <p>Challenges, leaderboards and achievements build on the same live socket. The
+                <strong>send</strong> side lives on the enhanced surface (<code>client.Enhanced</code>);
+                request/query methods resolve with the worker's reply, while progress and achievement
+                calls are fire-and-forget. Inbound broadcasts arrive on the client event surface &mdash;
+                subscribe with the client's normal <code>client.On("&lt;event&gt;", data =&gt; ...)</code>,
+                delivered as a <code>System.Text.Json.JsonElement</code>.</p>
+
+                <pre><code class="language-csharp">// Create a ranked challenge, report progress, read standings, then finalize
+await client.Enhanced.CreateChallengeAsync("weekly-sprint", "score", ranked: true);
+await client.Enhanced.ReportProgressAsync("weekly-sprint", 1200);
+
+var standings = await client.Enhanced.GetStandingsAsync("weekly-sprint", limit: 10);
+var result = await client.Enhanced.CompleteChallengeAsync("weekly-sprint", "completed");</code></pre>
+
+                <p>Query and lifecycle methods return a <code>Task&lt;JsonElement&gt;</code> that resolves
+                with the worker's ack; <code>ReportProgressAsync</code> and
+                <code>UnlockAchievementAsync</code> are fire-and-forget and return a plain
+                <code>Task</code>.</p>
+
+                <ul>
+                    <li><strong>CreateChallengeAsync</strong> &mdash; create a challenge/leaderboard &rarr; ack <code>challenge_create_success</code></li>
+                    <li><strong>ReportProgressAsync</strong> &mdash; fire-and-forget metric progress (no ack)</li>
+                    <li><strong>CompleteChallengeAsync</strong> &mdash; finalize with an outcome &rarr; ack <code>challenge_complete_success</code></li>
+                    <li><strong>UnlockAchievementAsync</strong> &mdash; fire-and-forget; pass <code>percentComplete</code> (0&ndash;100) (no ack)</li>
+                    <li><strong>GetStandingsAsync</strong> &mdash; request top-N + caller rank &rarr; ack <code>challenge_standings_success</code></li>
+                    <li><strong>GetAchievementsAsync</strong> &mdash; query achievement state &rarr; ack <code>achievement_state</code></li>
+                    <li><strong>SendChallengeInviteAsync</strong> &mdash; directed invite to another user &rarr; ack <code>challenge_invite_success</code></li>
+                    <li><strong>ReplyChallengeInviteAsync</strong> &mdash; accept/decline an invite &rarr; ack <code>challenge_reply_success</code></li>
+                    <li><strong>CancelChallengeInviteAsync</strong> &mdash; cancel a sent invite &rarr; ack <code>challenge_invite_cancel_success</code></li>
+                    <li><strong>GetChallengeInvitesAsync</strong> &mdash; list pending invites &rarr; ack <code>challenge_invites</code></li>
+                </ul>
+
+                <h3>Outcome vocabulary</h3>
+                <p>Pass one of these as the <code>outcome</code> for <code>CompleteChallengeAsync</code>:</p>
+                <ul>
+                    <li><code>completed</code> &mdash; win (rank 1)</li>
+                    <li><code>failed</code> &mdash; loss</li>
+                    <li><code>tied</code> &mdash; draw</li>
+                    <li><code>conceded</code> &mdash; resign / concede</li>
+                    <li><code>expired</code> &mdash; timed out</li>
+                </ul>
+
+                <h3>Progressive achievements</h3>
+                <p><code>UnlockAchievementAsync</code> always emits the wire event
+                <code>achievement_unlock</code>; the worker is authoritative and derives the outbound
+                broadcast from <code>percentComplete</code>: a value <code>&lt; 100</code> broadcasts
+                <code>achievement_progress</code> (status <code>in_progress</code>), while
+                <code>&gt;= 100</code> or an omitted value broadcasts <code>achievement_unlock</code>
+                (status <code>unlocked</code>).</p>
+
+                <h3>Inbound events</h3>
+                <p>Subscribe with <code>client.On(...)</code> to receive these broadcasts:</p>
+                <ul>
+                    <li><strong>Room broadcasts</strong> &mdash; <code>challenge_progress</code>, <code>leaderboard_rank_change</code>, <code>challenge_complete</code>, <code>achievement_unlock</code>, <code>achievement_progress</code></li>
+                    <li><strong>Directed (per-user)</strong> &mdash; <code>challenge_invited</code>, <code>challenge_reply_received</code>, <code>challenge_invite_cancelled</code></li>
+                </ul>
             </section>
 
             <section id="performance" class="section">
