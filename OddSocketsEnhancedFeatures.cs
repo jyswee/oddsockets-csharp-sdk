@@ -8,12 +8,20 @@ namespace OddSockets;
 /// Enhanced (Slack-like) feature surface for the OddSockets .NET SDK.
 ///
 /// Covers threads, reactions, read receipts, channels, direct messages,
-/// notifications, presence/typing, message editing and search. Every method
-/// travels over the real Socket.IO connection to the assigned worker: void
-/// methods emit a fire-and-forget event, and Task-returning methods emit a
+/// notifications, presence/typing, message editing, search and the
+/// server-authoritative challenge / leaderboard / achievement lifecycle. Every
+/// method travels over the real Socket.IO connection to the assigned worker:
+/// void methods emit a fire-and-forget event, and Task-returning methods emit a
 /// request and await the correlated response event. Broadcasts (for example
 /// "user_typing" and "reaction_added") arrive on the client's raw event
 /// surface via <see cref="OddSocketsClient.On(string, Action{JsonElement})"/>.
+///
+/// Challenge / leaderboard / achievement broadcasts that peers receive on that
+/// same raw surface are: "challenge_progress", "leaderboard_rank_change",
+/// "challenge_complete", "achievement_unlock", "achievement_progress",
+/// "challenge_invited", "challenge_reply_received" and
+/// "challenge_invite_cancelled" — subscribe with, e.g.,
+/// <c>client.On("leaderboard_rank_change", ...)</c>.
 /// </summary>
 public class OddSocketsEnhancedFeatures
 {
@@ -358,6 +366,131 @@ public class OddSocketsEnhancedFeatures
         if (query != null) payload["query"] = query;
         return RequestAsync("search_by_user", payload, "user_search_results");
     }
+
+    // ==================== CHALLENGE / LEADERBOARD EVENTS ====================
+    // Server-authoritative challenge lifecycle. Progress and completions land on
+    // the shared room envelope so every member (and any partner resultWebhookUrl)
+    // sees challenge_progress / leaderboard_rank_change / challenge_complete /
+    // achievement_unlock — subscribe with client.On("leaderboard_rank_change", ...).
+
+    /// <summary>Create (register) a challenge run and its optional result-webhook target.</summary>
+    public Task<JsonElement> CreateChallengeAsync(string challengeId, string metric, bool? ranked = null,
+        string? channel = null, string? resultWebhookUrl = null, string? standingsUrl = null)
+    {
+        var payload = new Dictionary<string, object>
+        {
+            ["challengeId"] = challengeId,
+            ["metric"] = metric
+        };
+        if (ranked != null) payload["ranked"] = ranked.Value;
+        if (channel != null) payload["channel"] = channel;
+        if (resultWebhookUrl != null) payload["resultWebhookUrl"] = resultWebhookUrl;
+        if (standingsUrl != null) payload["standingsUrl"] = standingsUrl;
+        return RequestAsync("challenge_create", payload, "challenge_create_success");
+    }
+
+    /// <summary>Report a progress value for the connected player. Fire-and-forget.</summary>
+    public Task ReportProgressAsync(string challengeId, double value, string? metric = null,
+        string? eventId = null, string? cohort = null, string? platform = null, string? channel = null)
+    {
+        var payload = new Dictionary<string, object>
+        {
+            ["challengeId"] = challengeId,
+            ["value"] = value
+        };
+        if (metric != null) payload["metric"] = metric;
+        if (eventId != null) payload["eventId"] = eventId;
+        if (cohort != null) payload["cohort"] = cohort;
+        if (platform != null) payload["platform"] = platform;
+        if (channel != null) payload["channel"] = channel;
+        return Emit("challenge_progress", payload);
+    }
+
+    /// <summary>Complete the connected player's run. Resolves with the server-authoritative result.</summary>
+    public Task<JsonElement> CompleteChallengeAsync(string challengeId, string outcome,
+        string? eventId = null, object? reward = null)
+    {
+        var payload = new Dictionary<string, object>
+        {
+            ["challengeId"] = challengeId,
+            ["outcome"] = outcome
+        };
+        if (eventId != null) payload["eventId"] = eventId;
+        if (reward != null) payload["reward"] = reward;
+        return RequestAsync("challenge_complete", payload, "challenge_complete_success");
+    }
+
+    /// <summary>
+    /// Report achievement progress or unlock. Fire-and-forget. Pass percentComplete
+    /// (0-100) for progressive achievements: &lt;100 broadcasts achievement_progress;
+    /// &gt;=100 or omitted broadcasts achievement_unlock.
+    /// </summary>
+    public Task UnlockAchievementAsync(string achievementId, string? name = null, string? tier = null,
+        double? percentComplete = null, string? challengeId = null, string? channel = null)
+    {
+        var payload = new Dictionary<string, object> { ["achievementId"] = achievementId };
+        if (name != null) payload["name"] = name;
+        if (tier != null) payload["tier"] = tier;
+        if (percentComplete != null) payload["percentComplete"] = percentComplete.Value;
+        if (challengeId != null) payload["challengeId"] = challengeId;
+        if (channel != null) payload["channel"] = channel;
+        return Emit("achievement_unlock", payload);
+    }
+
+    /// <summary>Fetch server-ordered leaderboard standings for a ranked challenge.</summary>
+    public Task<JsonElement> GetStandingsAsync(string challengeId, int limit = 20, int offset = 0)
+        => RequestAsync("challenge_standings", new Dictionary<string, object>
+        {
+            ["challengeId"] = challengeId,
+            ["limit"] = limit,
+            ["offset"] = offset
+        }, "challenge_standings_success");
+
+    /// <summary>Query persisted achievement state for the connected player.</summary>
+    public Task<JsonElement> GetAchievementsAsync(string? achievementId = null)
+    {
+        var payload = new Dictionary<string, object>();
+        if (achievementId != null) payload["achievementId"] = achievementId;
+        return RequestAsync("achievement_query", payload, "achievement_state");
+    }
+
+    /// <summary>Send a directed 1:1 challenge/invite to a specific player.</summary>
+    public Task<JsonElement> SendChallengeInviteAsync(string toUserId, string type = "match",
+        object? payload = null, int ttl = 300, string? channel = null, string? inviteId = null)
+    {
+        var body = new Dictionary<string, object>
+        {
+            ["toUserId"] = toUserId,
+            ["type"] = type,
+            ["ttl"] = ttl
+        };
+        if (payload != null) body["payload"] = payload;
+        if (channel != null) body["channel"] = channel;
+        if (inviteId != null) body["inviteId"] = inviteId;
+        return RequestAsync("challenge_invite", body, "challenge_invite_success");
+    }
+
+    /// <summary>Accept or decline a received invite.</summary>
+    public Task<JsonElement> ReplyChallengeInviteAsync(string inviteId, bool accept, string? reason = null)
+    {
+        var payload = new Dictionary<string, object>
+        {
+            ["inviteId"] = inviteId,
+            ["accept"] = accept
+        };
+        if (reason != null) payload["reason"] = reason;
+        return RequestAsync("challenge_reply", payload, "challenge_reply_success");
+    }
+
+    /// <summary>Cancel a pending invite you sent.</summary>
+    public Task<JsonElement> CancelChallengeInviteAsync(string inviteId)
+        => RequestAsync("challenge_invite_cancel",
+            new Dictionary<string, object> { ["inviteId"] = inviteId },
+            "challenge_invite_cancel_success");
+
+    /// <summary>Pull the connected player's still-pending invites (e.g. on reconnect).</summary>
+    public Task<JsonElement> GetChallengeInvitesAsync()
+        => RequestAsync("challenge_invites_query", new Dictionary<string, object>(), "challenge_invites");
 
     // ==================== INTERNALS ====================
 
