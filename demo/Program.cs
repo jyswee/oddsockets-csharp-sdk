@@ -25,7 +25,7 @@ public static class Program
         var apiKey = Environment.GetEnvironmentVariable("ODDSOCKETS_API_KEY");
         if (string.IsNullOrWhiteSpace(apiKey))
         {
-            Console.Error.WriteLine("Missing ODDSOCKETS_API_KEY. Get a free key (see README), then:");
+            Console.Error.WriteLine("Missing ODDSOCKETS_API_KEY. Get an API key (see README), then:");
             Console.Error.WriteLine("  export ODDSOCKETS_API_KEY=\"ak_...\"");
             return 1;
         }

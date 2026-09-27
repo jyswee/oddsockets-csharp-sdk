@@ -5,7 +5,7 @@ A runnable console program that performs two genuine end-to-end round-trips agai
 1. **Core pub/sub**: bob publishes a nonce-tagged message; alice receives it on her own connection, reads live presence, and unsubscribes.
 2. **Enhanced events**: bob fires `enhanced.StartTyping` and `enhanced.AddReaction`; alice receives `user_typing` and `reaction_added` on her public raw event surface (`client.On`) - proving the enhanced (Slack-like) surface is wired to the real Socket.IO transport.
 
-## Get a free API key
+## Get an API key
 
 Sign up in two steps (no card required). First request a code:
 

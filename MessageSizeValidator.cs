@@ -14,7 +14,7 @@ namespace OddSockets;
 public static class MessageSizeValidator
 {
     /// <summary>
-    /// Message size limits (industry standard - matches PubNub)
+    /// Platform message size limit, enforced server-side
     /// </summary>
     public static class MessageSizeLimits
     {
@@ -64,7 +64,7 @@ public static class MessageSizeValidator
             var messageSizeKB = Math.Round(messageSize / 1024.0, 1);
             throw new OddSocketsValidationException(
                 $"Message size ({messageSizeKB}KB) exceeds maximum allowed size of {MessageSizeLimits.MaxMessageSizeKB}KB. " +
-                $"This limit matches industry standards (PubNub, Socket.IO) for reliable real-time messaging.",
+                $"Split the payload, or publish a reference to it instead.",
                 ErrorCodes.MessageTooLarge);
         }
 

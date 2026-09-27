@@ -599,7 +599,7 @@ The OddSockets .NET SDK is designed to be thread-safe:
 - **Blazor** Server and WebAssembly
 - **MAUI** applications
 
-## Get a Free API Key
+## Get an API Key
 
 AI agents can sign up with a verified email in two steps — no dashboard, no human required.
 
@@ -619,14 +619,17 @@ curl -X POST https://oddsockets.com/api/agent-signup/verify \
 
 ## Plans
 
-| | Free | Starter | Pro |
-|---|---|---|---|
-| **Price** | $0/mo | $49.99/mo | $299/mo |
-| **MAU** | 100 | 1,000 | 50,000 |
-| **Concurrent connections** | 50 | 1,000 | Unlimited |
-| **Messages/day** | 10,000 | 4,320,000 | Unlimited |
-| **Channels** | 10 | Unlimited | Unlimited |
-| **Storage** | 100MB (24h) | 50GB (6 months) | Unlimited |
+No free tier — every plan starts with a 7-day free trial.
+
+| | Starter | Pro | Scale | Enterprise |
+|---|---|---|---|---|
+| **Price** | $29/mo | $99/mo | $299/mo | Contact sales |
+| **Messages/mo** | 5M | 25M | 100M | Unlimited |
+| **Peak connections** | 200 | 1,000 | 5,000 | Unlimited |
+| **MAU** | Unlimited | Unlimited | Unlimited | Unlimited |
+| **Extra messages** | $2.50/M | $1.60/M | $1.00/M | Included |
+
+Current pricing: [oddsockets.com/#pricing](https://oddsockets.com/#pricing).
 
 All limits are enforced in real time.
 
