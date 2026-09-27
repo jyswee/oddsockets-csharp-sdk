@@ -355,6 +355,99 @@ public class OddSocketsClient : IDisposable
     }
 
     /// <summary>
+    /// Fetches this tenant's headline usage tiles (MAU / DAU / total messages /
+    /// error-rate) for the account that owns the configured API key.
+    ///
+    /// Server contract: <c>GET {managerUrl}/api/tenant/usage</c> with the
+    /// <c>X-API-Key</c> header. Requires an API key — keyless/token-only clients
+    /// have no owner key to scope by, so this throws for them.
+    ///
+    /// HONESTY: any tile the server cannot compute yet comes back as null. This
+    /// method preserves null verbatim (it never coerces to 0) so callers can
+    /// render an em-dash instead of a fabricated zero.
+    /// </summary>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The usage statistics for the owning account.</returns>
+    /// <exception cref="InvalidOperationException">Thrown when the client is in token/keyless mode with no API key.</exception>
+    public async Task<UsageStats> GetUsageStatsAsync(CancellationToken cancellationToken = default)
+    {
+        if (IsTokenMode || string.IsNullOrEmpty(_config.ApiKey))
+        {
+            throw new InvalidOperationException(
+                "getUsageStats requires an apiKey (keyless/token clients have no owner scope to query)");
+        }
+
+        // Use the manager this client was configured for, matching the
+        // select-worker discovery path.
+        var managerUrl = await ManagerDiscovery.Instance.DiscoverManagerUrlAsync(_config.ApiKey, _config.ManagerUrl);
+
+        using var request = new HttpRequestMessage(HttpMethod.Get, $"{managerUrl}/api/tenant/usage");
+        request.Headers.Add("X-API-Key", _config.ApiKey);
+        request.Headers.Add("User-Agent", "OddSockets-DotNet-SDK/0.1.0-beta.1");
+
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        cts.CancelAfter(TimeSpan.FromSeconds(10));
+
+        var response = await _httpClient.SendAsync(request, cts.Token);
+        response.EnsureSuccessStatusCode();
+
+#if NET5_0_OR_GREATER
+        var content = await response.Content.ReadAsStringAsync(cts.Token);
+#else
+        var content = await response.Content.ReadAsStringAsync();
+#endif
+
+        using var doc = JsonDocument.Parse(content);
+        var root = doc.RootElement;
+
+        JsonElement tiles = default;
+        var hasTiles = root.ValueKind == JsonValueKind.Object &&
+                       root.TryGetProperty("tiles", out tiles) &&
+                       tiles.ValueKind == JsonValueKind.Object;
+
+        return new UsageStats
+        {
+            Mau = hasTiles ? ReadNullableLong(tiles, "mau") : null,
+            Dau = hasTiles ? ReadNullableLong(tiles, "dau") : null,
+            TotalMessages = hasTiles ? ReadNullableLong(tiles, "totalMessages") : null,
+            ErrorRate = hasTiles ? ReadNullableDouble(tiles, "errorRate") : null,
+            OwnerScope = TryGetString(root, "ownerScope"),
+            Detail = root.ValueKind == JsonValueKind.Object &&
+                     root.TryGetProperty("detail", out var detail) &&
+                     detail.ValueKind != JsonValueKind.Null
+                        ? detail.Clone()
+                        : (JsonElement?)null,
+            Timestamp = TryGetString(root, "timestamp")
+        };
+    }
+
+    // Reads a numeric tile as a nullable long. A missing tile or an explicit
+    // JSON null returns null so it stays distinguishable from a real 0.
+    private static long? ReadNullableLong(JsonElement tiles, string name)
+    {
+        if (tiles.TryGetProperty(name, out var value) &&
+            value.ValueKind == JsonValueKind.Number &&
+            value.TryGetInt64(out var n))
+        {
+            return n;
+        }
+        return null;
+    }
+
+    // Reads a numeric tile as a nullable double. A missing tile or an explicit
+    // JSON null returns null so it stays distinguishable from a real 0.
+    private static double? ReadNullableDouble(JsonElement tiles, string name)
+    {
+        if (tiles.TryGetProperty(name, out var value) &&
+            value.ValueKind == JsonValueKind.Number &&
+            value.TryGetDouble(out var d))
+        {
+            return d;
+        }
+        return null;
+    }
+
+    /// <summary>
     /// Adds an event handler.
     /// </summary>
     /// <param name="eventType">The event type.</param>
