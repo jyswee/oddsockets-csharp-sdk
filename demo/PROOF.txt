@@ -1,7 +1,7 @@
 OddSockets .NET SDK - live two-client regression proof
 =======================================================
 
-Captured against the LIVE OddSockets platform (worker [instance])
+Captured against the LIVE OddSockets platform
 using the SAME SDK a consumer installs. Two independent client connections
 (alice = subscriber, bob = publisher); anything alice receives can ONLY have
 travelled through the OddSockets worker - it is not a local echo. No mocks.

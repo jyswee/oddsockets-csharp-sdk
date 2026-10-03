@@ -48,4 +48,4 @@ The demo reads the key from the `ODDSOCKETS_API_KEY` environment variable and ne
 
 - `Program.cs` - the two-scenario, two-client demo.
 - `Dockerfile` - builds the SDK from source and runs the demo against the live platform.
-- `PROOF.txt` - captured console output from a live run through worker `[instance]`.
+- `PROOF.txt` - captured console output from a live run through the OddSockets service.
